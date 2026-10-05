@@ -1,0 +1,14 @@
+[package]
+name = "scientific_calc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Zero external dependencies for maximum speed and tiny file size!
+
+[profile.release]
+opt-level = "z"     # Optimize for size
+lto = true          # Link-time optimization for better dead-code elimination
+codegen-units = 1   # Maximizes optimization efficiency
+panic = "abort"     # Removes unwinding bloat
+strip = true        # Strips symbols/debug info from the final binary
