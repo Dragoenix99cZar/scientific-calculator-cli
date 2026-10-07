@@ -15,6 +15,40 @@ fn get_precedence(op: &str) -> i32 {
     }
 }
 
+fn is_function(token: &str) -> bool {
+    matches!(
+        token,
+        "sin"
+            | "cos"
+            | "tan"
+            | "sin_d"
+            | "cos_d"
+            | "tan_d"
+            | "sqrt"
+            | "ln"
+            | "log10"
+            | "log2"
+            | "exp"
+            | "floor"
+            | "ceil"
+            | "neg"
+            | "abs"
+            | "torad"
+            | "todeg"
+            | "tograd"
+            | "min"
+            | "max"
+            | "gcd"
+            | "lcm"
+            | "lerp"
+            | "topol_r"
+            | "topol_theta"
+            | "tocart_x"
+            | "tocart_y"
+            | "mod"
+    )
+}
+
 fn is_right_associative(op: &str) -> bool {
     op == "^" || op == "neg" || op == "!"
 }
@@ -112,12 +146,17 @@ pub fn tokenize(expression: &str) -> Result<Vec<String>, String> {
     Ok(refined)
 }
 
+/// Convert infix tokens to postfix using the Shunting-Yard algorithm (supporting nested functions and arguments)
 pub fn infix_to_postfix(tokens: Vec<String>) -> Result<Vec<String>, String> {
     let mut output: Vec<String> = Vec::new();
     let mut stack: Vec<String> = Vec::new();
+    let mut arg_stack: Vec<usize> = Vec::new();
 
-    for token in tokens {
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = tokens[i].clone();
         let clean_token = token.replace('_', "");
+
         if clean_token.parse::<f64>().is_ok() || get_constant(&token).is_some() {
             output.push(token);
         } else if get_precedence(&token) > 0 && token != "!" {
@@ -134,8 +173,30 @@ pub fn infix_to_postfix(tokens: Vec<String>) -> Result<Vec<String>, String> {
             stack.push(token);
         } else if token == "!" {
             stack.push(token);
+        } else if is_function(&token) {
+            stack.push(token);
+            if i + 1 < tokens.len() && tokens[i + 1] == "(" {
+                if i + 2 < tokens.len() && tokens[i + 2] == ")" {
+                    arg_stack.push(0);
+                } else {
+                    arg_stack.push(1);
+                }
+            } else {
+                arg_stack.push(1);
+            }
         } else if token == "(" {
             stack.push(token);
+        } else if token == "," {
+            while let Some(top) = stack.last() {
+                if top != "(" {
+                    output.push(stack.pop().unwrap());
+                } else {
+                    break;
+                }
+            }
+            if let Some(count) = arg_stack.last_mut() {
+                *count += 1;
+            }
         } else if token == ")" {
             while let Some(top) = stack.last() {
                 if top != "(" {
@@ -149,18 +210,18 @@ pub fn infix_to_postfix(tokens: Vec<String>) -> Result<Vec<String>, String> {
             } else {
                 return Err("Mismatched parentheses".into());
             }
-        } else if token == "," {
-            while let Some(top) = stack.last() {
-                if top != "(" {
-                    output.push(stack.pop().unwrap());
-                } else {
-                    break;
+
+            if let Some(top_op) = stack.last() {
+                if is_function(top_op) {
+                    let func = stack.pop().unwrap();
+                    let count = arg_stack.pop().unwrap_or(1);
+                    output.push(format!("{}:{}", func, count));
                 }
             }
         } else {
-            // Function names or identifiers
-            stack.push(token);
+            return Err(format!("Unknown token: '{}'", token));
         }
+        i += 1;
     }
 
     while let Some(op) = stack.pop() {
@@ -199,6 +260,128 @@ pub fn evaluate_postfix(tokens: Vec<String>) -> Result<f64, String> {
             stack.push(val);
         } else if let Some(val) = get_constant(&token) {
             stack.push(val);
+        } else if token.contains(':') {
+            let parts: Vec<&str> = token.split(':').collect();
+            let func = parts[0];
+            let count: usize = parts[1].parse().unwrap_or(1);
+
+            let mut args = Vec::new();
+            for _ in 0..count {
+                let val = stack
+                    .pop()
+                    .ok_or("Stack underflow / malformed expression")?;
+                args.push(val);
+            }
+            args.reverse();
+
+            let res = match func {
+                // Single-arg math functions handled locally
+                "sin" => {
+                    if args.len() != 1 {
+                        return Err("sin expects 1 argument".into());
+                    }
+                    clean_trig(args[0].sin())
+                }
+                "cos" => {
+                    if args.len() != 1 {
+                        return Err("cos expects 1 argument".into());
+                    }
+                    clean_trig(args[0].cos())
+                }
+                "tan" => {
+                    if args.len() != 1 {
+                        return Err("tan expects 1 argument".into());
+                    }
+                    clean_trig(args[0].tan())
+                }
+                "sin_d" => {
+                    if args.len() != 1 {
+                        return Err("sin_d expects 1 argument".into());
+                    }
+                    clean_trig((args[0] * PI / 180.0).sin())
+                }
+                "cos_d" => {
+                    if args.len() != 1 {
+                        return Err("cos_d expects 1 argument".into());
+                    }
+                    clean_trig((args[0] * PI / 180.0).cos())
+                }
+                "tan_d" => {
+                    if args.len() != 1 {
+                        return Err("tan_d expects 1 argument".into());
+                    }
+                    clean_trig((args[0] * PI / 180.0).tan())
+                }
+                "sqrt" => {
+                    if args.len() != 1 {
+                        return Err("sqrt expects 1 argument".into());
+                    }
+                    if args[0] < 0.0 {
+                        return Err("Math Error: Square root of negative number".into());
+                    }
+                    args[0].sqrt()
+                }
+                "ln" => {
+                    if args.len() != 1 {
+                        return Err("ln expects 1 argument".into());
+                    }
+                    if args[0] <= 0.0 {
+                        return Err("Math Error: Log of non-positive number".into());
+                    }
+                    args[0].ln()
+                }
+                "log10" => {
+                    if args.len() != 1 {
+                        return Err("log10 expects 1 argument".into());
+                    }
+                    if args[0] <= 0.0 {
+                        return Err("Math Error: Log of non-positive number".into());
+                    }
+                    args[0].log10()
+                }
+                "log2" => {
+                    if args.len() != 1 {
+                        return Err("log2 expects 1 argument".into());
+                    }
+                    if args[0] <= 0.0 {
+                        return Err("Math Error: Log of non-positive number".into());
+                    }
+                    args[0].log2()
+                }
+                "exp" => {
+                    if args.len() != 1 {
+                        return Err("exp expects 1 argument".into());
+                    }
+                    args[0].exp()
+                }
+                "floor" => {
+                    if args.len() != 1 {
+                        return Err("floor expects 1 argument".into());
+                    }
+                    args[0].floor()
+                }
+                "ceil" => {
+                    if args.len() != 1 {
+                        return Err("ceil expects 1 argument".into());
+                    }
+                    args[0].ceil()
+                }
+                "neg" => {
+                    if args.len() != 1 {
+                        return Err("neg expects 1 argument".into());
+                    }
+                    -args[0]
+                }
+                "abs" => {
+                    if args.len() != 1 {
+                        return Err("abs expects 1 argument".into());
+                    }
+                    args[0].abs()
+                }
+                // Delegate all multi-arg and conversion helper functions to conversions.rs
+                _ => crate::conversions::run_multi_arg(func, &args)?,
+            };
+            stack.push(res);
         } else {
             match token.as_str() {
                 "sin" | "cos" | "tan" | "sin_d" | "cos_d" | "tan_d" | "sqrt" | "ln" | "log10"
