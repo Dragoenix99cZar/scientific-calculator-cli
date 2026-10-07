@@ -4,8 +4,10 @@ const TAU: f64 = PI * 2.0;
 
 fn get_precedence(op: &str) -> i32 {
     match op {
+        "!" => 6,
         "neg" => 5,
-        "sin" | "cos" | "tan" | "sqrt" | "ln" | "log10" | "log2" | "exp" | "floor" | "ceil" => 4,
+        "sin" | "cos" | "tan" | "sin_d" | "cos_d" | "tan_d" | "sqrt" | "ln" | "log10" | "log2"
+        | "exp" | "floor" | "ceil" | "abs" => 4,
         "^" => 3,
         "*" | "/" | "%" => 2,
         "+" | "-" => 1,
@@ -14,7 +16,7 @@ fn get_precedence(op: &str) -> i32 {
 }
 
 fn is_right_associative(op: &str) -> bool {
-    op == "^" || op == "neg"
+    op == "^" || op == "neg" || op == "!"
 }
 
 fn get_constant(name: &str) -> Option<f64> {
@@ -26,7 +28,7 @@ fn get_constant(name: &str) -> Option<f64> {
     }
 }
 
-/// Manual lightweight tokenizer (Zero dependencies!)
+/// Tokenizer supporting scientific notation (1E3, 1E-3) and digit separators (_)
 pub fn tokenize(expression: &str) -> Result<Vec<String>, String> {
     let mut tokens = Vec::new();
     let mut chars = expression.chars().peekable();
@@ -37,24 +39,35 @@ pub fn tokenize(expression: &str) -> Result<Vec<String>, String> {
             continue;
         }
 
-        // Parse numbers (integers & decimals)
+        // Parse numbers (integers, decimals, underscores, scientific notation)
         if c.is_ascii_digit() || c == '.' {
             let mut num_str = String::new();
             while let Some(&next_c) = chars.peek() {
-                if next_c.is_ascii_digit() || next_c == '.' {
+                if next_c.is_ascii_digit()
+                    || next_c == '.'
+                    || next_c == '_'
+                    || next_c == 'e'
+                    || next_c == 'E'
+                {
                     num_str.push(next_c);
                     chars.next();
+                } else if next_c == '+' || next_c == '-' {
+                    let last_c = num_str.chars().last();
+                    if last_c == Some('e') || last_c == Some('E') {
+                        num_str.push(next_c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }
             }
             tokens.push(num_str);
-        }
-        // Parse identifiers (functions or constants like sin, pi)
-        else if c.is_ascii_alphabetic() {
+        } else if c.is_ascii_alphabetic() {
             let mut id_str = String::new();
             while let Some(&next_c) = chars.peek() {
-                if next_c.is_ascii_alphanumeric() {
+                if next_c.is_ascii_alphanumeric() || next_c == '_' {
                     id_str.push(next_c);
                     chars.next();
                 } else {
@@ -62,9 +75,7 @@ pub fn tokenize(expression: &str) -> Result<Vec<String>, String> {
                 }
             }
             tokens.push(id_str);
-        }
-        // Parse operators and symbols
-        else if "+-*/^(),%".contains(c) {
+        } else if "+-*/^(),%!".contains(c) {
             tokens.push(c.to_string());
             chars.next();
         } else {
@@ -72,7 +83,7 @@ pub fn tokenize(expression: &str) -> Result<Vec<String>, String> {
         }
     }
 
-    // Handle unary minus conversion
+    // Handle unary minus
     let mut refined = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
@@ -83,7 +94,7 @@ pub fn tokenize(expression: &str) -> Result<Vec<String>, String> {
                     last == "(" || last == "," || get_precedence(last) > 0
                 });
             if is_unary {
-                if i + 1 < tokens.len() && tokens[i + 1].parse::<f64>().is_ok() {
+                if i + 1 < tokens.len() && tokens[i + 1].replace('_', "").parse::<f64>().is_ok() {
                     refined.push(format!("-{}", tokens[i + 1]));
                     i += 2;
                     continue;
@@ -101,16 +112,15 @@ pub fn tokenize(expression: &str) -> Result<Vec<String>, String> {
     Ok(refined)
 }
 
-/// Convert infix tokens to postfix using the Shunting-Yard algorithm
 pub fn infix_to_postfix(tokens: Vec<String>) -> Result<Vec<String>, String> {
-    // Explicitly type-annotate as Vec<String> to prevent type inference errors
     let mut output: Vec<String> = Vec::new();
     let mut stack: Vec<String> = Vec::new();
 
     for token in tokens {
-        if token.parse::<f64>().is_ok() || get_constant(&token).is_some() {
+        let clean_token = token.replace('_', "");
+        if clean_token.parse::<f64>().is_ok() || get_constant(&token).is_some() {
             output.push(token);
-        } else if get_precedence(&token) > 0 {
+        } else if get_precedence(&token) > 0 && token != "!" {
             while let Some(top) = stack.last() {
                 if get_precedence(top) > get_precedence(&token)
                     || (get_precedence(top) == get_precedence(&token)
@@ -121,6 +131,8 @@ pub fn infix_to_postfix(tokens: Vec<String>) -> Result<Vec<String>, String> {
                     break;
                 }
             }
+            stack.push(token);
+        } else if token == "!" {
             stack.push(token);
         } else if token == "(" {
             stack.push(token);
@@ -145,6 +157,9 @@ pub fn infix_to_postfix(tokens: Vec<String>) -> Result<Vec<String>, String> {
                     break;
                 }
             }
+        } else {
+            // Function names or identifiers
+            stack.push(token);
         }
     }
 
@@ -158,26 +173,46 @@ pub fn infix_to_postfix(tokens: Vec<String>) -> Result<Vec<String>, String> {
     Ok(output)
 }
 
-/// Evaluate a postfix token queue
+fn clean_trig(val: f64) -> f64 {
+    let rounded = (val * 1e10).round() / 1e10;
+    if (rounded - 0.5).abs() < 1e-9 {
+        0.5
+    } else if (rounded - (-0.5)).abs() < 1e-9 {
+        -0.5
+    } else if (rounded - 1.0).abs() < 1e-9 {
+        1.0
+    } else if (rounded - (-1.0)).abs() < 1e-9 {
+        -1.0
+    } else if rounded.abs() < 1e-9 {
+        0.0
+    } else {
+        rounded
+    }
+}
+
 pub fn evaluate_postfix(tokens: Vec<String>) -> Result<f64, String> {
     let mut stack = Vec::new();
 
     for token in tokens {
-        if let Ok(val) = token.parse::<f64>() {
+        let clean_token = token.replace('_', "");
+        if let Ok(val) = clean_token.parse::<f64>() {
             stack.push(val);
         } else if let Some(val) = get_constant(&token) {
             stack.push(val);
         } else {
             match token.as_str() {
-                "sin" | "cos" | "tan" | "sqrt" | "ln" | "log10" | "log2" | "exp" | "floor"
-                | "ceil" | "neg" => {
+                "sin" | "cos" | "tan" | "sin_d" | "cos_d" | "tan_d" | "sqrt" | "ln" | "log10"
+                | "log2" | "exp" | "floor" | "ceil" | "abs" | "neg" => {
                     let val = stack
                         .pop()
                         .ok_or("Stack underflow / malformed expression")?;
                     let res = match token.as_str() {
-                        "sin" => val.sin(),
-                        "cos" => val.cos(),
-                        "tan" => val.tan(),
+                        "sin" => clean_trig(val.sin()),
+                        "cos" => clean_trig(val.cos()),
+                        "tan" => clean_trig(val.tan()),
+                        "sin_d" => clean_trig((val * PI / 180.0).sin()),
+                        "cos_d" => clean_trig((val * PI / 180.0).cos()),
+                        "tan_d" => clean_trig((val * PI / 180.0).tan()),
                         "sqrt" => {
                             if val < 0.0 {
                                 return Err("Math Error: Square root of negative number".into());
@@ -205,10 +240,23 @@ pub fn evaluate_postfix(tokens: Vec<String>) -> Result<f64, String> {
                         "exp" => val.exp(),
                         "floor" => val.floor(),
                         "ceil" => val.ceil(),
+                        "abs" => val.abs(),
                         "neg" => -val,
                         _ => unreachable!(),
                     };
                     stack.push(res);
+                }
+                "!" => {
+                    let val = stack.pop().ok_or("Stack underflow")?;
+                    if val < 0.0 || val.fract() != 0.0 {
+                        return Err("Factorial Error: Input must be a non-negative integer".into());
+                    }
+                    let n = val as u64;
+                    let mut res: u64 = 1;
+                    for i in 1..=n {
+                        res = res.checked_mul(i).ok_or("Factorial overflow")?;
+                    }
+                    stack.push(res as f64);
                 }
                 "+" | "-" | "*" | "/" | "^" | "%" => {
                     let b = stack.pop().ok_or("Stack underflow")?;
@@ -234,7 +282,7 @@ pub fn evaluate_postfix(tokens: Vec<String>) -> Result<f64, String> {
                     };
                     stack.push(res);
                 }
-                _ => return Err(format!("Unknown token: '{}'", token)),
+                _ => return Err(format!("Unknown token or unhandled function: '{}'", token)),
             }
         }
     }
@@ -477,5 +525,42 @@ mod tests {
         let step_3_expr = "ceil(5.2 + _)".replace("_", &step_2_res.to_string());
         let step_3_res = evaluate(&step_3_expr).unwrap();
         assert_approx_eq(step_3_res, 9.0);
+    }
+
+    #[test]
+    fn test_scientific_notation_and_separators() {
+        assert_approx_eq(evaluate("1E3").unwrap(), 1000.0);
+        assert_approx_eq(evaluate("1E-3").unwrap(), 0.001);
+        assert_approx_eq(evaluate("10.001000").unwrap(), 10.001);
+        assert_approx_eq(evaluate("1_000").unwrap(), 1000.0);
+        assert_approx_eq(evaluate("1_000_000").unwrap(), 1_000_000.0);
+    }
+
+    #[test]
+    fn test_absolute_value_and_unary() {
+        assert_approx_eq(evaluate("abs(-42.5)").unwrap(), 42.5);
+        assert_approx_eq(evaluate("neg(5)").unwrap(), -5.0);
+    }
+
+    #[test]
+    fn test_factorials() {
+        assert_approx_eq(evaluate("0!").unwrap(), 1.0);
+        assert_approx_eq(evaluate("5!").unwrap(), 120.0);
+        assert_approx_eq(evaluate("20!").unwrap(), 2432902008176640000.0);
+    }
+
+    #[test]
+    fn test_degree_trig_precision() {
+        assert_approx_eq(evaluate("cos_d(60)").unwrap(), 0.5);
+        assert_approx_eq(evaluate("sin_d(90)").unwrap(), 1.0);
+        assert_approx_eq(evaluate("tan_d(45)").unwrap(), 1.0);
+        assert_approx_eq(evaluate("cos_d(90)").unwrap(), 0.0);
+    }
+
+    #[test]
+    fn test_basic_arithmetic_and_errors() {
+        assert_approx_eq(evaluate("5 + 3 * 2").unwrap(), 11.0);
+        assert!(evaluate("5 / 0").is_err());
+        assert!(evaluate("sqrt(-1)").is_err());
     }
 }
